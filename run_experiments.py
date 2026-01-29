@@ -8,12 +8,30 @@ SCORES_PATH = "scores_memmap/sasrec_ml-100k_full_scores_float16.npy"
 POS_U_PATH  = "ml100k_pos_u.npy"
 POS_I_PATH  = "ml100k_pos_i.npy"
 META_PATH   = "ml100k_item_metadata_aligned.csv"
+PROMOTERS = ["Action", "Comedy", "Romance"]
+
 
 # For MovieLens-10M
 # SCORES_PATH = "scores_memmap/sasrec_ml-10m_full_scores_float16.npy"
 # POS_U_PATH  = "ml10m_pos_u.npy"
 # POS_I_PATH  = "ml10m_pos_i.npy"
 # META_PATH   = "ml-10m_item_metadata_aligned.csv"
+# PROMOTERS = ["Action", "Comedy", "Romance"]
+
+
+
+# SCORES_PATH = "scores_memmap/SASRec_steam-merged_test_full_scores_f16.npy"
+# POS_U_PATH  = "scores_memmap/SASRec_steam-merged_test_user_ids_i32.npy"
+# POS_I_PATH  = "scores_memmap/SASRec_steam-merged_test_pos_item_i32.npy"
+# META_PATH   = "steam_meta_V2.csv"
+# PROMOTERS = [
+#     "Ubisoft - San Francisco",
+#     "SmiteWorks USA, LLC",
+#     "Capcom",
+# ]
+# PROMOTERS = ['Indie', 'Action', 'Casual']
+
+
 
 DUAL_MAX_ITER = 200         
 DUAL_LR       = 0.5          
@@ -21,7 +39,6 @@ DUAL_CLIP     = 50.0
 DUAL_MU       = 1e-8         
 KS = [1, 5, 10]      
 MAX_K = max(KS)       
-PROMOTERS = ["Action", "Comedy", "Romance"]
 DELTA_M = 2
 TOLERANCE = 1e-10
 IPF_MAX_ITER = 300
@@ -114,6 +131,104 @@ def solve_population_kl_newton(probs, Q, pop_targets, weights=None,
     R /= np.maximum(R.sum(axis=1, keepdims=True), 1e-20)
 
     return R, lam
+
+def make_closed_form_disjoint_solver(Q, eps=1e-12):
+    """
+    Precompute disjoint constraint sets from Q, then return a per-user solver:
+        solve_one_user(u, p_u, t_u) -> (r_u, status)
+
+    Q: shape [K, I_num] with 0/1 membership (promoter masks)
+    """
+    Q = np.asarray(Q)
+    K, I_num = Q.shape
+
+    constraint_indices = [np.flatnonzero(Q[k] != 0) for k in range(K)]
+
+    # Verify disjointness ONCE
+    used = np.zeros(I_num, dtype=bool)
+    for k, idx in enumerate(constraint_indices):
+        if idx.size > 0 and used[idx].any():
+            raise ValueError(
+                f"Closed-form requires disjoint masks, but constraint {k} overlaps a previous set."
+            )
+        used[idx] = True
+
+    idx0 = np.flatnonzero(~used)  # complement set
+
+    def solve_one_user(u, p_u, t_u):
+        """
+        u: user id (ignored, only for signature compatibility)
+        p_u: (I_num,) baseline distribution for that user (should sum to 1)
+        t_u: (K,) target masses for each promoter group
+        """
+        p = np.asarray(p_u, dtype=np.float64)
+        targets = np.asarray(t_u, dtype=np.float64)
+
+        # Basic sanity
+        if p.ndim != 1:
+            return p.copy(), "bad_p_shape"
+        if targets.shape[0] != K:
+            return p.copy(), "bad_targets_shape"
+
+        r = np.zeros_like(p, dtype=np.float64)
+
+        # Fill promoted groups
+        for k in range(K):
+            idx = constraint_indices[k]
+            Tk = float(targets[k])
+
+            if Tk < -eps:
+                return p.copy(), "infeasible_target_negative"
+
+            if idx.size == 0:
+                if Tk > eps:
+                    return p.copy(), "infeasible_empty_group"
+                continue
+
+            Bk = p[idx].sum()
+            if Bk <= eps:
+                if Tk > eps:
+                    return p.copy(), "infeasible_zero_baseline_mass"
+                # Tk≈0, keep zeros
+                continue
+
+            r[idx] = p[idx] * (Tk / Bk)
+
+        # Complement takes leftover mass
+        T0 = 1.0 - targets.sum()
+        if T0 < -eps:
+            return p.copy(), "infeasible_sum_targets_gt_1"
+
+        if idx0.size > 0:
+            B0 = p[idx0].sum()
+            if B0 <= eps:
+                if T0 > eps:
+                    return p.copy(), "infeasible_no_complement_mass"
+            else:
+                r[idx0] = p[idx0] * (T0 / B0)
+        else:
+            # No complement exists => must have T0 ≈ 0
+            if T0 > eps:
+                return p.copy(), "infeasible_no_complement_items"
+
+        # Renormalize for numerical stability
+        s = r.sum()
+        if s <= eps:
+            return p.copy(), "infeasible_zero_result"
+        r /= s
+
+        return r, "ok"
+
+    return solve_one_user
+
+
+
+
+
+
+
+
+
 
 def solve_kl_newton(p, Q, targets, max_iter=NEWTON_MAX_ITER, tol=TOLERANCE):
     K = len(targets)
@@ -1066,6 +1181,15 @@ results.append(evaluate_method("kl_newton",    solve_newton,   probs, Q, targets
 results.append(evaluate_method("lagrangian_precise", solve_mrs_provider_precise, probs, Q, targets_all, pos_map, multi_map))
 results.append(evaluate_population_newton("kl_newton_population", probs, Q, pop_targets, pos_map, multi_map))
 results.append(evaluate_method("ip_milp",      solve_ip_milp,  probs, Q, targets_all, pos_map, multi_map))
+# closed_solver = make_closed_form_disjoint_solver(Q)
+# results.append(
+#     evaluate_method(
+#         "closed",
+#         closed_solver,          
+#         probs, Q, targets_all,
+#         pos_map, multi_map
+#     )
+# )
 df_results = pd.DataFrame(results)
 cols = (["method", "fail_rate",
          "avg_error", "avg_time_ms", "spearman@100"] +
@@ -1077,6 +1201,7 @@ print(df_results)
 OUT_CSV = "exposure_methods_results_100K.csv"
 df_results.to_csv(OUT_CSV, index=False)
 print(f"Saved: {OUT_CSV}")
+
 
 
 
