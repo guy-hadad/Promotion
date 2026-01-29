@@ -8,6 +8,13 @@ SCORES_PATH = "scores_memmap/sasrec_ml-100k_full_scores_float16.npy"
 POS_U_PATH  = "ml100k_pos_u.npy"
 POS_I_PATH  = "ml100k_pos_i.npy"
 META_PATH   = "ml100k_item_metadata_aligned.csv"
+
+# For MovieLens-10M
+# SCORES_PATH = "scores_memmap/sasrec_ml-10m_full_scores_float16.npy"
+# POS_U_PATH  = "ml10m_pos_u.npy"
+# POS_I_PATH  = "ml10m_pos_i.npy"
+# META_PATH   = "ml-10m_item_metadata_aligned.csv"
+
 DUAL_MAX_ITER = 200         
 DUAL_LR       = 0.5          
 DUAL_CLIP     = 50.0         
@@ -1070,5 +1077,6 @@ print(df_results)
 OUT_CSV = "exposure_methods_results_100K.csv"
 df_results.to_csv(OUT_CSV, index=False)
 print(f"Saved: {OUT_CSV}")
+
 
 
